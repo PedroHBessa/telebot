@@ -7,6 +7,10 @@ const { google } = require('googleapis');
 // Configurações do bot do Telegram
 const token = '6301739956:AAEudGIc4wjQx6jkuTL2DaClcghNaECqw84';
 const bot = new TelegramBot(token, { polling: true });
+let answers = [];
+const ext = '.jpg';
+const filename = `${Date.now()}${ext}`;
+      const filePath = path.join(__dirname, 'arquivos', filename);
 
 // Configurações de autenticação do Google Sheets
 const auth = new google.auth.GoogleAuth({
@@ -19,19 +23,27 @@ const sheets = google.sheets({ version: 'v4', auth });
 const drive = google.drive({ version: 'v3', auth });
 
 // Objeto para armazenar o estado da conversa
-const conversationState = {};
+let conversationState = {};
 
-async function uploadImageToDrive(imagePath) {
+async function uploadImageToDrive(imagePath, folder) {
   try {
     const response = await drive.files.create({
       requestBody: {
         name: path.basename(imagePath),
-        parents: ['1Ji5gpATr4c4H1qVYPOfMfJD1ziXxbziQ'], // Replace with the ID of the destination folder in Google Drive
+        parents: [folder], // Replace with the ID of the destination folder in Google Drive
       },
       media: {
         mimeType: 'image/jpeg',
         body: fs.createReadStream(imagePath),
       },
+    });
+    // Delete local file after upload
+    fs.unlink(imagePath, (err) => {
+      if (err) {
+        console.error(`Error deleting the image: ${err}`);
+      } else {
+        console.log('Image deleted successfully.');
+      }
     });
 
     const { id } = response.data;
@@ -43,39 +55,54 @@ async function uploadImageToDrive(imagePath) {
 }
 
 // Função para enviar as respostas para a planilha
-async function enviarRespostasParaPlanilha(respostas) {
-  const spreadsheetId = '1UOPujHcd8TGBjosBdkG9kTMfegMZ0vBunnJa1fB2Yqc';
+async function enviarRespostasParaPlanilha(respostas, planilha, chatId) {
+  
+  const spreadsheetId = planilha; // ALTERAR COM ID DA PLANILHA
   const range = 'Página1!A1'; // Defina o intervalo onde deseja enviar as respostas
 
   const imageUrl = respostas.pop(); // Get the image URL from the answers
-  respostas.push(imageUrl); // Add the image URL as the answer
+  respostas.push(imageUrl); 
+  
+  let respostasOrd = [respostas[0], respostas[2], respostas[1]]
+
+
 
   try {
-    const response = await sheets.spreadsheets.values.append({
+    sheets.spreadsheets.values.append({
       spreadsheetId,
       range,
       valueInputOption: 'USER_ENTERED',
       resource: {
-        values: [respostas],
+        values: [respostasOrd],
       },
     });
+    conversationState[chatId] = {
+      currentStep: 1,
+      folder: '',
+      planilha: ''
+    };
+    answers = [];
   } catch (error) {
     console.error('Erro ao enviar respostas para a planilha:', error);
   }
 }
 
 const initBot = async () => {
+  
+ 
   //handle images
   bot.on('photo', async (msg) => {
-    const chatId = msg.chat.id;
+    
+     const chatId = msg.chat.id;
     const photo = msg.photo[msg.photo.length - 1];
+
+    
   
     try {
       // Save the photo file to a local directory
       const fileId = photo.file_id;
-      const ext = '.jpg';
-      const filename = `${Date.now()}${ext}`;
-      const filePath = path.join(__dirname, 'arquivos', filename);
+      
+      
   
       const fileUrl = await bot.getFileLink(fileId);
       if (fileUrl) {
@@ -83,6 +110,9 @@ const initBot = async () => {
           url: fileUrl,
           responseType: 'stream',
         });
+
+
+        
   
         const writeStream = fs.createWriteStream(filePath);
         response.data.pipe(writeStream);
@@ -92,17 +122,25 @@ const initBot = async () => {
           writeStream.on('error', reject);
         })
           .then(async () => {
-            // Upload the image to Google Drive and get the URL
-            const imageUrl = await uploadImageToDrive(filePath);
-  
-            // Finalize the conversation and include the image URL in the answers
-            const response = 'Dados salvos na planilha com sucesso. Conversa finalizada';
-            bot.sendMessage(chatId, response);
-            const respostas = conversationState[chatId].answers;
-            respostas.push(`https://drive.google.com/file/d/${imageUrl}/view?usp=drive_link`);
-            console.log(respostas)
-            enviarRespostasParaPlanilha(respostas);
-            delete conversationState[chatId];
+           
+
+
+            const chatIdPhoto = msg.chat.id;
+    let response = 'Olá, você quer lançar uma nota? (Digite "/sair" a qualquer momento para reiniciar o bot)';
+    const options = {
+      reply_markup: {
+        keyboard: [['Sim', 'Não']],
+        one_time_keyboard: true // Remover teclado após seleção
+      }
+    };
+    bot.sendMessage(chatIdPhoto, response, options);
+
+   
+
+
+    
+
+
           })
           .catch((error) => {
             console.error('Erro ao salvar a foto do usuário:', error);
@@ -118,53 +156,46 @@ const initBot = async () => {
       const response = 'Houve um erro ao salvar o arquivo de imagem. Por favor, tente novamente.';
       bot.sendMessage(chatId, response);
     }
-  });
-  
-
-  // Tratamento de mensagens recebidas
-  bot.onText(/\/sair/, async (msg) => {
-    const chatId = msg.chat.id;
-
-    // Restart the bot by deleting the conversation state
-    delete conversationState[chatId];
-
-    const response = 'Bot reiniciado.';
-    bot.sendMessage(chatId, response);
-  });
+   
 
 
 
+  })}
 
   bot.onText(/.*/, async (msg) => {
     const chatId = msg.chat.id;
     const message = msg.text;
-
-    if (!conversationState[chatId]) {
-      conversationState[chatId] = {
-        step: 1,
-        answers: []
-      };
-
-      const response = 'Olá, você quer lançar uma nota? (Digite "/sair" a qualquer momento para reiniciar o bot)';
-      const options = {
-        reply_markup: {
-          keyboard: [['Sim', 'Não']],
-          one_time_keyboard: true // Remover teclado após seleção
+    if(msg.text === "/sair") {
+      fs.unlink(imagePath, (err) => {
+        if (err) {
+          console.error(`Error deleting the image: ${err}`);
+        } else {
+          console.log('Image deleted successfully.');
         }
+      });
+      delete conversationState[chatId];
+      answers = [];
+      bot.sendMessage(chatId, "Bot reiniciado com sucesso!");
+
+      return;
+    }
+    if (!conversationState[chatId]) {
+      // If conversation state doesn't exist, initialize it
+      conversationState[chatId] = {
+        currentStep: 1,
+        folder: '', // Initialize folder property as empty
+        planilha: ''
       };
-      bot.sendMessage(chatId, response, options);
-    } else {
-      const currentStep = conversationState[chatId].step;
-      let response;
+    }
+  
+    
 
-      if (currentStep === 1) {
-
+      if (conversationState[chatId].currentStep === 1) {
         if (message.toLowerCase() === 'não') {
           // Finalizar a conversa se a resposta for "Não"
           response = 'Conversa finalizada. Obrigado por utilizar o bot!';
           bot.sendMessage(chatId, response);
           delete conversationState[chatId];
-          return;
         } else {
           // Pergunta 2: Qual o tipo da nota?
           response = 'Qual o tipo da nota?';
@@ -175,11 +206,11 @@ const initBot = async () => {
             }
           };
           bot.sendMessage(chatId, response, options);
-          conversationState[chatId].step++;
+          
+          conversationState[chatId].currentStep++
+          
         }
-      }   else if (currentStep === 2) {
-        // Armazenar resposta à terceira pergunta
-        conversationState[chatId].answers.push(message);
+      } else if (conversationState[chatId].currentStep === 2) {
 
         
         response = `Qual a fase da obra?`;
@@ -190,67 +221,50 @@ const initBot = async () => {
             }
           };
           bot.sendMessage(chatId, response, options);
-        conversationState[chatId].step++;
-        console.log(currentStep, conversationState[chatId] )
-      } else if (currentStep === 3) {
-        // Armazenar resposta à segunda pergunta
-        conversationState[chatId].answers.push(message);
+          answers.push(message);
+          conversationState[chatId].currentStep++
+          if(message.toLowerCase() === "compra") {
+            conversationState[chatId].planilha = "1WzkkmAkBoLA44BhobtcCAfJiUHWqBoDntb0wM577Pa4" // PREENCHER COM ID DA PLANILHA DE COMPRAS
+            conversationState[chatId].folder = "1cQTlWdd1b18szJ1VDePnHICRQxbIBt5F"
+          } else {
+            conversationState[chatId].planilha = "1k7diSjCYeuSH4W2jISuaw4lBKMNgLfcYQkl_xU9AYXI" // PREENCHER COM ID DA PLANILHA DE SERVIÇOS
+            conversationState[chatId].folder = "19rCKI1_gTI4Jm2nvPADaKUHH7Up5o7SK"
+          }
+          const imageUrl = await uploadImageToDrive(filePath, conversationState[chatId].folder);
+          answers.push(`https://drive.google.com/file/d/${imageUrl}/view?usp=drive_link`);
+      
+      } else if (conversationState[chatId].currentStep === 3) {
 
         // Pergunta 3: Qual o valor da nota?
         response = 'Qual o valor da nota?';
         bot.sendMessage(chatId, response);
-        conversationState[chatId].step++;
-      } else if(currentStep === 4) {
+        
+        conversationState[chatId].currentStep++
+      } else if(conversationState[chatId].currentStep === 4) {
         // Verificar se a resposta é um número de ponto flutuante
         const value = parseFloat(message.replace(',', '.'));
 
         if (isNaN(value)) {
-          console.log("qweqwe4");
           // Valor inválido
           response = 'Valor inválido. Por favor, insira um número válido.';
           bot.sendMessage(chatId, response);
         } else {
-          conversationState[chatId].answers.push(value);
-
-          // Pergunta 4: Deseja enviar um anexo?
-          response = 'Deseja enviar um anexo?';
-          const options = {
-            reply_markup: {
-              keyboard: [['Sim', 'Não']],
-              one_time_keyboard: true // Remover teclado após seleção
-            }
-          };
-          bot.sendMessage(chatId, response, options);
-          conversationState[chatId].step++;
+          answers.push(value);
+          
+          enviarRespostasParaPlanilha(answers, conversationState[chatId].planilha, chatId);
+          bot.sendMessage(chatId, "Dados salvos na planilha com sucesso!");
+          delete conversationState[chatId];
         }
           
         
        
        
-      } else if (currentStep === 5) {
-        
-        if (message.toLowerCase() === 'sim') {
-          // Pergunta 5: Envie o arquivo de imagem
-          response = 'Por favor, envie o arquivo de imagem:';
-          bot.sendMessage(chatId, response);
-          conversationState[chatId].step++;
-          return;
-        } else {
-          // Finalizar a conversa se a resposta for "Não"
-          response = 'Conversa finalizada. Obrigado por utilizar o bot!';
-          bot.sendMessage(chatId, response);
-          const respostas = conversationState[chatId].answers;
-          enviarRespostasParaPlanilha(respostas);
-          delete conversationState[chatId];
-          return;
-        }
+     
+      
       } else {
         return;
       }
-    }
+    
   });
-}
-
-
-
 initBot();
+
